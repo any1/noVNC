@@ -1991,6 +1991,23 @@ export default class RFB extends EventTargetMixin {
         }
     }
 
+    _getTimeUs() {
+        return Number((performance.timeOrigin + performance.now()) * 1000.0) >>> 0;
+    }
+
+    _sendNtpMsg() {
+        const t0 = this._getTimeUs();
+        const t1 = 0;
+        const t2 = 0;
+        const t3 = 0;
+        RFB.messages.ntp(this._sock, t0, t1, t2, t3);
+    }
+
+    _startNtpTimer() {
+        // TODO: make a constant for the interval
+        setInterval(() => this._sendNtpMsg(), 100)
+    }
+
     _negotiateServerInit() {
         if (this._sock.rQwait("server initialization", 24)) { return false; }
 
@@ -2075,6 +2092,8 @@ export default class RFB extends EventTargetMixin {
         this._sendEncodings();
         RFB.messages.fbUpdateRequest(this._sock, false, 0, 0, this._fbWidth, this._fbHeight);
 
+        this._startNtpTimer();
+
         this._updateConnectionState('connected');
         return true;
     }
@@ -2108,6 +2127,7 @@ export default class RFB extends EventTargetMixin {
         encs.push(encodings.pseudoEncodingContinuousUpdates);
         encs.push(encodings.pseudoEncodingDesktopName);
         encs.push(encodings.pseudoEncodingExtendedClipboard);
+        encs.push(encodings.pseudoEncodingNtp);
 
         if (this._fbDepth == 24) {
             encs.push(encodings.pseudoEncodingVMwareCursor);
@@ -2403,6 +2423,28 @@ export default class RFB extends EventTargetMixin {
         return true;
     }
 
+    _handleNtpMsg() {
+        if (this._sock.rQwait("NTP message", 19, 1)) { return false; }
+        this._sock.rQskipBytes(3); // Padding
+
+        const t0 = this._sock.rQshift32();
+        const t1 = this._sock.rQshift32();
+        const t2 = this._sock.rQshift32();
+        var t3 = this._sock.rQshift32();
+
+        if (t1 != 0 && t2 != 0 && t3 == 0) {
+            t3 = this._getTimeUs();
+            RFB.messages.ntp(this._sock, t0, t1, t2, t3);
+        }
+
+        const round_trip_time = ((t3 - t0) | 0) - ((t2 - t1) | 0);
+        const time_difference = (((t1 - t0) | 0) + ((t2 - t3) | 0)) / 2;
+
+        //console.log("NTP: round-trip-time: " + round_trip_time + " µs, time-difference" + time_difference + " µs");
+
+        return true;
+    }
+
     _normalMsg() {
         let msgType;
         if (this._FBU.rects > 0) {
@@ -2453,6 +2495,9 @@ export default class RFB extends EventTargetMixin {
 
             case 250:  // XVP
                 return this._handleXvpMsg();
+
+            case 160: // NTP
+                return this._handleNtpMsg();
 
             default:
                 this._fail("Unexpected server message (type " + msgType + ")");
@@ -3294,6 +3339,34 @@ RFB.messages = {
         buff[offset + 3] = op;
 
         sock._sQlen += 4;
+        sock.flush();
+    },
+
+    ntp(sock, t0, t1, t2, t3) {
+        const buff = sock._sQ;
+        var off = sock._sQlen;
+
+        const append_u32be = (x) => {
+            buff[off++] = (x >> 24) & 0xff;
+            buff[off++] = (x >> 16) & 0xff;
+            buff[off++] = (x >> 8) & 0xff;
+            buff[off++] = (x >> 0) & 0xff;
+        }
+
+        // msg-type:
+        buff[off++] = 160;
+
+        // padding:
+        buff[off++] = 0;
+        buff[off++] = 0;
+        buff[off++] = 0;
+
+        append_u32be(t0);
+        append_u32be(t1);
+        append_u32be(t2);
+        append_u32be(t3);
+
+        sock._sQlen = off;
         sock.flush();
     }
 };
