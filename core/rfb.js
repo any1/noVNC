@@ -96,6 +96,31 @@ class SampleBuffer {
         this.buffer[this.index] = element;
         this.index = (this.index + 1) % this.length;
     }
+
+    average() {
+        const data = this.buffer.filter((x) => x !== null);
+        const sum = data.reduce((acc, x) => x + acc, 0);
+        return sum / data.length;
+    }
+
+    jitter() {
+        const data = this.buffer.filter((x) => x !== null);
+        const min = Math.min(...data);
+        const max = Math.max(...data);
+        return max - min;
+    }
+
+    min() {
+        const data = this.buffer.filter((x) => x !== null);
+        const min = Math.min(...data);
+        return min;
+    }
+
+    max() {
+        const data = this.buffer.filter((x) => x !== null);
+        const max = Math.max(...data);
+        return max;
+    }
 }
 
 SampleBuffer.prototype.reduce = function(acc, value) {
@@ -147,7 +172,8 @@ export default class RFB extends EventTargetMixin {
 
         this._ntpSamples = new SampleBuffer(16, [0, Number.MAX_NUMBER]);
 
-        this._averageFrameLatency = 0.0;
+        this._frameLatencySamples = new SampleBuffer(60, null);
+
         this._averageDecodingLatency = 0.0;
 
         // Server capabilities
@@ -2034,7 +2060,10 @@ export default class RFB extends EventTargetMixin {
     }
 
     _showLatencies() {
-        const frameLatency = (this._averageFrameLatency / 1000.0).toFixed(1);
+        const averageFrameLatency = (this._frameLatencySamples.average() / 1000.0).toFixed(1);
+        const minFrameLatency = (this._frameLatencySamples.min() / 1000.0).toFixed(1);
+        const maxFrameLatency = (this._frameLatencySamples.max() / 1000.0).toFixed(1);
+
         const decodingLatency = (this._averageDecodingLatency / 1000.0).toFixed(1);
 
         let networkLatency = 'UNKNOWN';
@@ -2044,7 +2073,8 @@ export default class RFB extends EventTargetMixin {
         }
 
         console.log("Latency report: "
-            + "total frame latency: " + frameLatency + " ms"
+            + "total frame latency (min, avg, max): " + minFrameLatency
+            + ", " + averageFrameLatency + ", " + maxFrameLatency + " ms"
             + ", best case network latency: " + networkLatency + " ms"
             + ", decoding latency: " + decodingLatency + " ms");
     }
