@@ -129,7 +129,7 @@ export default class RFB extends EventTargetMixin {
         this._currentPts = null;
 
         this._ntpMaxSamples = 16;
-        this._ntpSamples = Array(this._ntpMaxSamples).fill([Number.MAX_VALUE, 0]);
+        this._ntpSamples = Array(this._ntpMaxSamples).fill([0, Number.MAX_VALUE]);
         this._ntpSampleIndex = 0;
 
         this._averageFrameLatency = 0.0;
