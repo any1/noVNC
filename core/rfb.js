@@ -125,6 +125,13 @@ export default class RFB extends EventTargetMixin {
         this._rfbCleanDisconnect = true;
         this._rfbRSAAESAuthenticationState = null;
 
+        // TODO: Where do I put this?
+        this._currentPts = null;
+
+        this._ntpMaxSamples = 16;
+        this._ntpSamples = Array(this._ntpMaxSamples).fill([Number.MAX_VALUE, 0]);
+        this._ntpSampleIndex = 0;
+
         // Server capabilities
         this._rfbVersion = 0;
         this._rfbMaxVersion = 3.8;
@@ -2005,7 +2012,7 @@ export default class RFB extends EventTargetMixin {
 
     _startNtpTimer() {
         // TODO: make a constant for the interval
-        setInterval(() => this._sendNtpMsg(), 100)
+        setInterval(() => this._sendNtpMsg(), 1000)
     }
 
     _negotiateServerInit() {
@@ -2127,6 +2134,7 @@ export default class RFB extends EventTargetMixin {
         encs.push(encodings.pseudoEncodingContinuousUpdates);
         encs.push(encodings.pseudoEncodingDesktopName);
         encs.push(encodings.pseudoEncodingExtendedClipboard);
+        encs.push(encodings.pseudoEncodingPts);
         encs.push(encodings.pseudoEncodingNtp);
 
         if (this._fbDepth == 24) {
@@ -2423,6 +2431,34 @@ export default class RFB extends EventTargetMixin {
         return true;
     }
 
+    _addNtpSample(theta, delta) {
+        this._ntpSamples[this._ntpSampleIndex] = [theta, delta];
+        this._ntpSampleIndex = (this._ntpSampleIndex + 1) % this._ntpMaxSamples;
+    }
+
+    _getBestNtpTheta() {
+        let bestDelta = Number.MAX_VALUE;
+        let bestTheta = null;
+        for (let i = 0; i < this._ntpMaxSamples; ++i) {
+            let theta = this._ntpSamples[i][0];
+            let delta = this._ntpSamples[i][1];
+
+            if (delta < bestDelta) {
+                bestDelta = delta;
+                bestTheta = theta;
+            }
+        }
+        return bestTheta;
+    }
+
+    _fromServerToLocalClock(t) {
+        let theta = this._getBestNtpTheta();
+        if (theta === null) {
+            return null;
+        }
+        return (t - theta) | 0;
+    }
+
     _handleNtpMsg() {
         if (this._sock.rQwait("NTP message", 19, 1)) { return false; }
         this._sock.rQskipBytes(3); // Padding
@@ -2437,8 +2473,10 @@ export default class RFB extends EventTargetMixin {
             RFB.messages.ntp(this._sock, t0, t1, t2, t3);
         }
 
-        const round_trip_time = ((t3 - t0) | 0) - ((t2 - t1) | 0);
-        const time_difference = (((t1 - t0) | 0) + ((t2 - t3) | 0)) / 2;
+        const theta = (((t1 - t0) | 0) + ((t2 - t3) | 0)) / 2;
+        const delta = ((t3 - t0) | 0) - ((t2 - t1) | 0);
+
+        this._addNtpSample(theta, delta);
 
         //console.log("NTP: round-trip-time: " + round_trip_time + " µs, time-difference" + time_difference + " µs");
 
@@ -2514,7 +2552,24 @@ export default class RFB extends EventTargetMixin {
         }
     }
 
+    _updatePerfStats(decodeStartTime, decodeEndTime, flipEndTime) {
+        const decodeLatency = ((decodeEndTime - decodeStartTime) / 1000.0).toFixed(1);
+        const renderingLatency = ((flipEndTime - decodeEndTime) / 1000.0).toFixed(1);
+
+        console.log("Decoding latency: " + decodeLatency + " ms, rendering latency: " + renderingLatency + " ms");
+
+        if (this._currentPts !== null) {
+            const pts = this._fromServerToLocalClock(this._currentPts);
+            if (pts !== null) {
+                const totalFrameLatency = ((flipEndTime - pts) / 1000.0).toFixed(1);
+                console.log("Total frame latency (server to client): " + totalFrameLatency + " ms");
+            }
+        }
+    }
+
     _framebufferUpdate() {
+        const decodeStartTime = this._getTimeUs();
+
         if (this._FBU.rects === 0) {
             if (this._sock.rQwait("FBU header", 3, 1)) { return false; }
             this._sock.rQskipBytes(1);  // Padding
@@ -2551,7 +2606,13 @@ export default class RFB extends EventTargetMixin {
             this._FBU.encoding = null;
         }
 
+        const decodeEndTime = this._getTimeUs()
+
         this._display.flip();
+
+        const flipEndTime = this._getTimeUs()
+
+        this._updatePerfStats(decodeStartTime, decodeEndTime, flipEndTime)
 
         return true;  // We finished this FBU
     }
@@ -2581,6 +2642,9 @@ export default class RFB extends EventTargetMixin {
 
             case encodings.pseudoEncodingExtendedDesktopSize:
                 return this._handleExtendedDesktopSize();
+
+            case encodings.pseudoEncodingPts:
+                return this._handlePtsRect();
 
             default:
                 return this._handleDataRect();
@@ -2831,6 +2895,16 @@ export default class RFB extends EventTargetMixin {
             this._resize(this._FBU.width, this._FBU.height);
         }
 
+        return true;
+    }
+
+    _handlePtsRect() {
+        if (this._sock.rQwait("PtsRect", 8)) {
+            return false;
+        }
+
+        this._sock.rQskipBytes(4); // skip 32 most significant bits
+        this._currentPts = this._sock.rQshift32();
         return true;
     }
 
