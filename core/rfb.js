@@ -132,6 +132,9 @@ export default class RFB extends EventTargetMixin {
         this._ntpSamples = Array(this._ntpMaxSamples).fill([Number.MAX_VALUE, 0]);
         this._ntpSampleIndex = 0;
 
+        this._averageFrameLatency = 0.0;
+        this._averageDecodingLatency = 0.0;
+
         // Server capabilities
         this._rfbVersion = 0;
         this._rfbMaxVersion = 3.8;
@@ -2012,7 +2015,28 @@ export default class RFB extends EventTargetMixin {
 
     _startNtpTimer() {
         // TODO: make a constant for the interval
-        setInterval(() => this._sendNtpMsg(), 1000)
+        setInterval(() => this._sendNtpMsg(), 1000);
+    }
+
+    _showLatencies() {
+        const frameLatency = (this._averageFrameLatency / 1000.0).toFixed(1);
+        const decodingLatency = (this._averageDecodingLatency / 1000.0).toFixed(1);
+
+        let networkLatency = 'UNKNOWN';
+        const bestDelta = this._getBestNtpDelta();
+        if (bestDelta !== null) {
+            networkLatency = (bestDelta / 1000.0).toFixed(1);
+        }
+
+        console.log("Latency report: "
+            + "total frame latency: " + frameLatency + " ms"
+            + ", best case network latency: " + networkLatency + " ms"
+            + ", decoding latency: " + decodingLatency + " ms");
+    }
+
+    _startPerfTimer() {
+        // TODO: make a constant for the interval
+        setInterval(() => this._showLatencies(), 250)
     }
 
     _negotiateServerInit() {
@@ -2100,6 +2124,7 @@ export default class RFB extends EventTargetMixin {
         RFB.messages.fbUpdateRequest(this._sock, false, 0, 0, this._fbWidth, this._fbHeight);
 
         this._startNtpTimer();
+        this._startPerfTimer();
 
         this._updateConnectionState('connected');
         return true;
@@ -2451,6 +2476,17 @@ export default class RFB extends EventTargetMixin {
         return bestTheta;
     }
 
+    _getBestNtpDelta() {
+        let bestDelta = Number.MAX_VALUE;
+        for (let i = 0; i < this._ntpMaxSamples; ++i) {
+            let delta = this._ntpSamples[i][1];
+            if (delta < bestDelta) {
+                bestDelta = delta;
+            }
+        }
+        return bestDelta;
+    }
+
     _fromServerToLocalClock(t) {
         let theta = this._getBestNtpTheta();
         if (theta === null) {
@@ -2553,16 +2589,21 @@ export default class RFB extends EventTargetMixin {
     }
 
     _updatePerfStats(decodeStartTime, decodeEndTime, flipEndTime) {
-        const decodeLatency = ((decodeEndTime - decodeStartTime) / 1000.0).toFixed(1);
-        const renderingLatency = ((flipEndTime - decodeEndTime) / 1000.0).toFixed(1);
+        const decodingLatency = decodeEndTime - decodeStartTime;
 
-        console.log("Decoding latency: " + decodeLatency + " ms, rendering latency: " + renderingLatency + " ms");
+        // TODO: Adjust the gain or make it time based
+        const gain = 0.1;
+
+        this._averageDecodingLatency = gain * decodingLatency
+                + (1.0 - gain) * this._averageDecodingLatency;
 
         if (this._currentPts !== null) {
             const pts = this._fromServerToLocalClock(this._currentPts);
             if (pts !== null) {
-                const totalFrameLatency = ((flipEndTime - pts) / 1000.0).toFixed(1);
-                console.log("Total frame latency (server to client): " + totalFrameLatency + " ms");
+                const totalFrameLatency = (flipEndTime - pts) | 0;
+                this._averageFrameLatency =
+                        gain * totalFrameLatency
+                        + (1.0 - gain) * this._averageFrameLatency;
             }
         }
     }
