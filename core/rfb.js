@@ -85,6 +85,23 @@ const extendedClipboardActionPeek    = 1 << 26;
 const extendedClipboardActionNotify  = 1 << 27;
 const extendedClipboardActionProvide = 1 << 28;
 
+class SampleBuffer {
+    constructor(length, initialValue) {
+        this.index = 0;
+        this.length = length;
+        this.buffer = Array(length).fill(initialValue);
+    }
+
+    add(element) {
+        this.buffer[this.index] = element;
+        this.index = (this.index + 1) % this.length;
+    }
+}
+
+SampleBuffer.prototype.reduce = function(acc, value) {
+    return this.buffer.reduce(acc, value)
+};
+
 export default class RFB extends EventTargetMixin {
     constructor(target, urlOrChannel, options) {
         if (!target) {
@@ -128,9 +145,7 @@ export default class RFB extends EventTargetMixin {
         // TODO: Where do I put this?
         this._currentPts = null;
 
-        this._ntpMaxSamples = 16;
-        this._ntpSamples = Array(this._ntpMaxSamples).fill([0, Number.MAX_VALUE]);
-        this._ntpSampleIndex = 0;
+        this._ntpSamples = new SampleBuffer(16, [0, Number.MAX_NUMBER]);
 
         this._averageFrameLatency = 0.0;
         this._averageDecodingLatency = 0.0;
@@ -2456,35 +2471,17 @@ export default class RFB extends EventTargetMixin {
         return true;
     }
 
-    _addNtpSample(theta, delta) {
-        this._ntpSamples[this._ntpSampleIndex] = [theta, delta];
-        this._ntpSampleIndex = (this._ntpSampleIndex + 1) % this._ntpMaxSamples;
-    }
-
     _getBestNtpTheta() {
-        let bestDelta = Number.MAX_VALUE;
-        let bestTheta = null;
-        for (let i = 0; i < this._ntpMaxSamples; ++i) {
-            let theta = this._ntpSamples[i][0];
-            let delta = this._ntpSamples[i][1];
-
-            if (delta < bestDelta) {
-                bestDelta = delta;
-                bestTheta = theta;
-            }
-        }
-        return bestTheta;
+        const best = this._ntpSamples.reduce((acc, x) => {
+            return x[1] < acc[1] ? x : acc;
+        }, [0, Number.MAX_VALUE]);
+        return best[1] != Number.MAX_VALUE ? best[0] : null;
     }
 
     _getBestNtpDelta() {
-        let bestDelta = Number.MAX_VALUE;
-        for (let i = 0; i < this._ntpMaxSamples; ++i) {
-            let delta = this._ntpSamples[i][1];
-            if (delta < bestDelta) {
-                bestDelta = delta;
-            }
-        }
-        return bestDelta;
+        return this._ntpSamples.reduce((acc, x) => {
+            return x[1] < acc ? x[1] : acc;
+        }, Number.MAX_VALUE);
     }
 
     _fromServerToLocalClock(t) {
@@ -2512,7 +2509,7 @@ export default class RFB extends EventTargetMixin {
         const theta = (((t1 - t0) | 0) + ((t2 - t3) | 0)) / 2;
         const delta = ((t3 - t0) | 0) - ((t2 - t1) | 0);
 
-        this._addNtpSample(theta, delta);
+        this._ntpSamples.add([theta, delta]);
 
         //console.log("NTP: round-trip-time: " + round_trip_time + " µs, time-difference" + time_difference + " µs");
 
